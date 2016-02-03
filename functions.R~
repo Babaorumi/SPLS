@@ -1,0 +1,440 @@
+## It is assumed that the support of G is (-\infty,+\infty) and that
+## G is centered at 0. The copulas must have only one parameter.
+## effInterval is the effective support of G (from a computer
+## point of view).
+## Q is either a list of the quantile functions G^{-1} either
+## a list of (n*1)-vectors : (\tilde x_1,...,\tilde x_n) where the
+## \tilde x_j are a sample of G_j.
+simul <- function(n,Q,mu,pz,theta,copulaFamilies,psi=NULL){
+
+    d <- nrow(mu)
+    K <- ncol(mu)
+    x <- matrix(nrow=n,ncol=d)
+    z <- numeric(K)
+    cop <- list()
+    intervalTheta <- matrix(nrow=2,ncol=K)
+
+    if(is.null(psi)){
+        psi <- function(t,j){t}
+    }
+    
+    for(z in 1:K){
+        if(copulaFamilies[z]=="gaussian"){
+            cop[[z]] <- normalCopula(dim=d)
+            intervalTheta[,z] <- c(-.99,.99)
+        }else if(copulaFamilies[z]=="clayton"){
+            cop[[z]] <- claytonCopula(dim=d)
+            intervalTheta[,z] <- c(0.001,50)
+        }else if(copulaFamilies[z]=="frank"){
+            cop[[z]] <- frankCopula(dim=d)
+            intervalTheta[,z] <- c(-50,50)
+        }else if(copulaFamilies[z]=="indep"){
+            cop[[z]] <- indepCopula(dim=d)
+            intervalTheta[,z] <- c(0,0)
+        }else{
+            stop("'copulaFamily' is wrong.")
+        }
+    }
+
+    for(i in 1:n){
+        z[i] <- sample(1:K,1,prob=pz)
+        cop[[z[i]]]@parameters <- theta[z[i]]
+        u <- rCopula(1,cop[[z[i]]])
+        for(j in 1:d){
+            if(class(Q[[j]])=="function"){
+                x[i,j] <- psi(Q[[j]](u[j])+mu[j,z[i]],j)
+            }else{
+                x[i,j] <- psi(quantile(Q[[j]], u[j])+mu[j,z[i]],j)
+            }
+        }
+    }
+    
+    return( cbind(x,z) )
+}
+
+## Function to draw contour lines for simulated data based on bootstrap
+drawContours <- function(dataGroup,
+                         marginFamilies, marginPara, mu, pz, theta, copulaFamilies,
+                         paths, nbootstrap, xrange, yrange, probs){
+
+    d <- ncol(dataGroup)-1
+    K <- length(copulaFamilies)
+    data <- dataGroup[,1:d]
+    pathRaw <- paths[1]
+    pathTruth <- paths[2]
+    
+    ## Plot the raw data
+    postscript(pathRaw)
+    plot(data,pch=20,xlim=range(data[,1]),ylim=range(data[,2]))
+    dev.off()
+
+    ## Plot the data along with contours
+    postscript(pathTruth)
+    plot(data[dataGroup[,d+1]==1,],pch=4,
+         xlim=range(data[,1]),ylim=range(data[,2]))
+    points(data[dataGroup[,d+1]==2,],pch=3)
+    points(data[dataGroup[,d+1]==3,],pch=1)
+    points(data[dataGroup[,d+1]==0,],pch=20,cex=.5)
+    pmargin <- dmargin <- qmargin <- vector("list",d)
+    for(j in 1:d){
+        if(marginFamilies[j]=="student"){
+            pmargin[[j]] <- function(x, par){pt(x, df=par)}
+            dmargin[[j]] <- function(x, par){dt(x, df=par)}
+            qmargin[[j]] <- function(x, par){qt(x, df=par)}
+        }else if(marginFamilies[j]=="gaussian"){
+            pmargin[[j]] <- function(x, par){pnorm(x, sd=par)}
+            dmargin[[j]] <- function(x, par){dnorm(x, sd=par)}
+            qmargin[[j]] <- function(x, par){qnorm(x, sd=par)}
+        }else if(marginFamilies[j]=="laplace"){
+            pmargin[[j]] <- function(x, par){plaplace(x, b=par)}
+            dmargin[[j]] <- function(x, par){dlaplace(x, b=par)}
+            qmargin[[j]] <- function(x, par){qlaplace(x, b=par)}
+        }else{
+            stop("This margin family is not implemented")
+        }
+    }
+    cop <- vector("list",K)
+    for(z in 1:K){
+        if(copulaFamilies[z]=="gaussian"){
+            cop[[z]] <- normalCopula(dim=d, param=theta[z])
+        }else if(copulaFamilies[z]=="clayton"){
+            cop[[z]] <- claytonCopula(dim=d, param=theta[z])
+        }else if(copulaFamilies[z]=="frank"){
+            cop[[z]] <- frankCopula(dim=d, param=theta[z])
+        }else if(copulaFamilies[z]=="indep"){
+            cop[[z]] <- indepCopula(dim=d)
+        }else{
+            stop("'copulaFamily' is wrong.")
+        }
+    }
+    foo <- function(x,y,z){
+        dCopula(c(pmargin[[1]](x-mu[1,z],marginPara[1]),pmargin[[2]](y-mu[2,z],marginPara[2])),
+                cop[[z]])*dmargin[[1]](x-mu[1,z],marginPara[1])*dmargin[[2]](y-mu[2,z],marginPara[2])
+    }
+    otherdataGroup <- simul(nbootstrap,
+                            list(function(x){qmargin[[1]](x,marginPara[1])},
+                                function(x){qmargin[[2]](x,marginPara[2])}),
+                            mu,pz,theta,copulaFamilies)
+    otherdata <- fX <- vector("list",length=K)
+    for(z in 1:K){
+        otherdata[[z]] <- otherdataGroup[otherdataGroup[,d+1]==z,1:d]
+        fX[[z]] <- apply(otherdata[[z]],1,function(x)foo(x[1],x[2],z))
+    }
+    cont <- vector("list",length=K)
+    for(z in 1:K){
+        cont[[z]] <- outer(xrange,yrange,Vectorize(foo),z=z)
+        contour(xrange,yrange,cont[[z]],add=TRUE,levels=quantile(fX[[z]],probs),
+                labels="")
+    }
+    dev.off()
+    list(contours=cont, sample=fX)
+}
+
+## G: array of size n*d*K representing G_j(y_{ij}-mu_{jz}) for
+## j=1,...,d, i=1,...,n and z=1,...,K (same for g);
+## y_{ij}=\psi_j^{-1}(x_{ij})
+## mu (d*K)-matrix
+## psiInvPrime is a (n*d)-matrix containing the (\psi_j^{-1})'(x_{ij})
+
+EMalgo <- function(data, copulaFamilies, psi, psiInv, psiInvPrime, nbit, bandwidth){
+
+    x <- data
+    n <- nrow(x)
+    d <- ncol(x)
+    K <- length(copulaFamilies)
+    km <- kmeans(x,centers=K)
+    mu <- t(km$centers)
+    pz <- km$size/nrow(x)
+    theta <- numeric(K) ## NOT SURE THIS IS NECESSARY
+    G <- array(dim=c(n,d,K))
+    g <- array(dim=c(n,d,K))
+    intervalTheta <- matrix(nrow=2,ncol=K)
+    cop <- list()
+    for(z in 1:K){
+        if(copulaFamilies[z]=="gaussian"){
+            cop[[z]] <- normalCopula(dim=d)
+            intervalTheta[,z] <- c(-.99,.99)
+        }else if(copulaFamilies[z]=="clayton"){
+            cop[[z]] <- claytonCopula(dim=d)
+            intervalTheta[,z] <- c(0.001,50)
+        }else if(copulaFamilies[z]=="frank"){
+            cop[[z]] <- frankCopula(dim=d)
+            intervalTheta[,z] <- c(-50,50)
+        }else if(copulaFamilies[z]=="indep"){
+            cop[[z]] <- indepCopula(dim=d)
+            intervalTheta[,z] <- c(0,0)
+        }else{
+            stop("'copulaFamilies' is wrong.")
+        }
+    }
+    sampleOfG <- NA
+    for(j in 1:d){
+        for(z in 1:K){
+            sampleOfG <- c( sampleOfG, psi(x[km$cluster==z,j],j)-mu[j,z] )
+            sampleOfG <- sampleOfG[-1]
+            G[,j,z] <- ks::kcde(sampleOfG,
+                                eval.points=psiInv(x[,j],j)-mu[j,z])$estimate
+            g[,j,z] <- ks::kde(sampleOfG,
+                               eval.points=psiInv(x[,j],j)-mu[j,z])$estimate
+
+            
+        }
+    }
+
+    for(z in 1:K){
+        if(copulaFamilies[z]=="indep"){
+            cop[[z]]@parameters <- theta[z] <- 0
+        }else{
+            theta[z] <- fitCopula(cop[[z]], pobs(x[km$cluster==z,]),
+                                  method="itau")@estimate
+            cop[[z]]@parameters <- theta[z]
+        }
+    }
+    
+    objectiveValue <- 0
+    
+    ## loop
+    for(t in 1:nbit){
+        
+        ## 0. Calcul de h(z|x^i), x^i multivariate (OK)
+        num <- hzx <- matrix(nrow=n, ncol=K)
+        denom <- numeric(n)
+        for(z in 1:K){
+            for(i in 1:n){ 
+                num[i,z] <- dCopula(G[i,,z],copula=cop[[z]]
+                                    )*prod(g[i,,z])*prod(psiInvPrime[i,])*pz[z]
+            }
+        }
+        for(i in 1:n){
+            denom[i] <- sum(num[i,],na.rm=TRUE)
+            for(z in 1:K){
+                hzx[i,z] <- if(denom[i]==0) 1/K else num[i,z]/denom[i]
+            }
+        }
+
+        ## 1. Update pi_z for each z (OK)
+        newpz <- numeric(K)
+        for(z in 1:K){
+            newpz[z] <- mean(hzx[,z],na.rm=TRUE)
+        }
+
+        ## 2. Update mu_{jz} for each j=1,...,d, z=1,...,K (OK)
+        newmu <- matrix(nrow=d,ncol=K)
+        for(z in 1:K){
+            for(j in 1:d){
+                newmu[j,z] <- sum(psiInv(x[,j],j)*hzx[,z])/sum(hzx[,z])
+            }
+        }
+        
+        ## Update G, ie create a sample of it
+        zsim <- numeric(n)
+        xtilde <- matrix(nrow=n,ncol=d)
+        for(i in 1:n){
+            zsim[i] <- sample(1:K,1,prob=hzx[i,]) 
+            for(j in 1:d){
+                xtilde[i,j] <- psiInv(x[i,j],j)-mu[j,zsim[i]] 
+            }
+        }
+
+        ## Compute the "G" (OK)
+        newG1 <- newG2 <- newg1 <- newg2 <- array(dim=c(n,d,K))
+        newG <- newg <- array(dim=c(n,d,K))
+        for(z in 1:K){
+            for(j in 1:d){
+                newG1[,j,z] <- ks::kcde(xtilde[,j],
+                                        eval.points=psiInv(x[,j],j)-mu[j,z])$estimate
+                newG2[,j,z] <- ks::kcde(xtilde[,j],
+                                        eval.points=-psiInv(x[,j],j)+mu[j,z])$estimate
+                newg1[,j,z] <- ks::kde(xtilde[,j],
+                                       eval.points=psiInv(x[,j],j)-mu[j,z])$estimate
+                newg2[,j,z] <- ks::kde(xtilde[,j],
+                                       eval.points=-psiInv(x[,j],j)+mu[j,z])$estimate
+                ## symmetrization
+                newg[,j,z] <- (newg1[,j,z]+newg2[,j,z])/2
+                newG[,j,z] <- (newG1[,j,z]+1-newG2[,j,z])/2
+            }
+        }
+
+        ## Update copulas parameters
+        newTheta <- numeric(K)
+        for(z in 1:K){
+            if(copulaFamilies[z]=="indep"){
+                cop[[z]]@parameters <- newTheta[z] <- 0
+            }else{
+                optimizeFoo <- function(par,z){
+                    cop[[z]]@parameters <- par
+                    sum(log(dCopula(newG[,,z],copula=cop[[z]]))*hzx[,z])
+                }
+                newTheta[z] <- optimize(
+                    optimizeFoo,intervalTheta[,z],z=z,maximum=TRUE)$maximum
+                cop[[z]]@parameters <- newTheta[z]
+            }
+        }
+
+        ## Compute the new objective value
+        term1 <- term2 <- term3 <- matrix(nrow=n,ncol=K)
+        for(z in 1:K){
+            for(i in 1:n){
+                term1[i,z] <- log(dCopula(newG[i,,z],copula=cop[[z]]))*hzx[i,z]
+                term2[i,z] <- sum(log(newg[i,,z]))*hzx[i,z]
+                term3[i,z] <- log(newpz[z])*hzx[i,z]
+            }
+        }
+
+        objectiveValue <- c(objectiveValue,sum(term1+term2+term3))
+        print(objectiveValue[length(objectiveValue)])
+        
+        ## Updates the programme variables
+        mu <- newmu
+        g <- newg
+        G <- newG
+        pz <- newpz
+        theta <- newTheta
+    }
+    
+    return( list(G=G,g=g,theta=theta,mu=mu,pz=pz,xtilde=xtilde,
+                 hzx=hzx, copulaFamilies=copulaFamilies,
+                 Ovalue=objectiveValue[-1]) )
+}
+
+
+## Laplace distribution
+dlaplace <- function(x,b){
+    exp(-abs(x)/b)/2/b
+}
+plaplace <- function(x,b){
+    if(x<0){
+        exp(x/b)/2
+    }else{
+        1-exp(-x/b)/2
+    }
+}
+qlaplace <- function(x,b){
+    if(x<=.5){
+        b*(log(2)+log(x))
+    }else{
+        -b*(log(2)+log(1-x))
+    }
+}
+rlaplace <- function(n,b){
+    sapply(runif(n),qlaplace,b=b)
+}
+
+
+## MULTIVARIATE DIAGNOSTIC 
+## 'em' is the result of my function 'em' applied to the data 'data'.
+## paths is a character vector of size d+2 where 'd' is the
+## number of observed variables. It contains the paths to which are saved the
+## pictures. xrange and yrange define the grid on which the contour lines
+## are to be drawn (see function 'contour' of R). probs controls the level of
+## the contour lines. It is such that the contour line f(x)=c is drawn with
+## c such that P(f(X_i)\le c)=probs ; here f is the multivariate density of the
+## observed random vector and x a point of the grid.
+
+makediagnostic <- function(data, em, paths, nbootstrap, xrange, yrange, probs){
+
+    d <- nrow(em$mu)
+    K <- ncol(em$mu)
+    pathPredictions <- paths[1]
+    pathPredictionsNooutliers <- paths[2]
+    pathMargins <- paths[3:(d+2)]
+
+    cop <- vector("list",K)
+    for(z in 1:K){
+        if(em$copulaFamilies[z]=="gaussian"){
+            cop[[z]] <- normalCopula(dim=d, param=em$theta[z])
+        }else if(em$copulaFamilies[z]=="clayton"){
+            cop[[z]] <- claytonCopula(dim=d, param=em$theta[z])
+        }else if(em$copulaFamilies[z]=="frank"){
+            cop[[z]] <- frankCopula(dim=d, param=em$theta[z])
+        }else if(em$copulaFamilies[z]=="indep"){
+            cop[[z]] <- indepCopula(dim=d)
+        }else{
+            stop("'copulaFamily' is wrong.")
+        }
+    }
+
+    dlocationshift.cluster <- function(x,y,z){
+        h1 <- ks::kde(em$xtilde[,1],eval.points=x-em$mu[1,z])$estimate
+        G1 <- ks::kcde(em$xtilde[,1],eval.points=x-em$mu[1,z])$estimate
+        h2 <- ks::kde(em$xtilde[,2],eval.points=y-em$mu[2,z])$estimate
+        G2 <- ks::kcde(em$xtilde[,2],eval.points=y-em$mu[2,z])$estimate
+        T1 <- dCopula(c(G1,G2),cop[[z]])
+        T1*h1*h2
+    }
+
+    ## Predictions with contours 
+    zpred <- apply(em$hzx, 1, function(x)which(x==max(x)))
+    Q <- vector("list",d)
+    for(j in 1:d){Q[[j]] <- em$xtilde[,j]}
+    fXbootstrap <- cont <- vector("list",length=K)
+    quant <- fhatX <- numeric(nrow(data))
+    bootstrapsample <- simul(nbootstrap,Q,em$mu,em$pz,em$theta,em$copulaFamilies)
+    for(z in 1:K){
+        ## bootstrap sample in group z
+        fXbootstrap[[z]] <- apply(bootstrapsample[bootstrapsample[,d+1]==z,1:d],
+                                  1,function(x)dlocationshift.cluster(x[1],x[2],z))
+        ## density over the grid defined by xrange,yrange
+        cont[[z]] <- outer(xrange, yrange, Vectorize(dlocationshift.cluster), z=z)
+    }
+
+    ## plot predictions along with the region of level 1-probs
+    postscript(pathPredictions)
+    plot(data[zpred==1,],xlim=range(data[,1]),ylim=range(data[,2]),pch=4)
+    points(data[zpred==2,],pch=3)
+    points(data[zpred==3,],pch=1)
+    for(z in 1:K){
+        contour(xrange, yrange, cont[[z]],
+                levels=quantile(fXbootstrap[[z]],probs),
+                add=TRUE, labels="")
+    }
+    dev.off()
+    
+    ## Same with removing outliers, if any
+    ## test if outlier
+    for(z in 1:K){
+        fhatX[which(zpred==z)] <- apply(data[zpred==z,],1,
+                                        function(x)dlocationshift.cluster(x[1],x[2],z))
+        quant[which(zpred==z)] <- quantile(fXbootstrap[[z]],probs)
+    }
+    outliers <- which(fhatX<=quant)
+    zprednew <- zpred
+    ## outliers = group 0
+    zprednew[outliers] <- rep(0,length(outliers))
+    
+    ## plots with contours
+    postscript(pathPredictionsNooutliers)
+    plot(data[zprednew==1,],xlim=range(data[,1]),ylim=range(data[,2]),pch=4)
+    points(data[zprednew==2,],pch=3)
+    points(data[zprednew==3,],pch=1)
+    points(data[zprednew==0,],pch=20,cex=.5)
+    for(z in 1:K){
+        contour(xrange, yrange, cont[[z]],
+                levels=quantile(fXbootstrap[[z]],probs),
+                add=TRUE, labels="")
+    }
+    dev.off()
+
+    ## MARGINS
+    dLS.cluster.margin <- function(x,z,j){
+        ks::kde(em$xtilde[,j],eval.points=x-em$mu[j,z])$estimate
+    }
+    dLS.margin <- function(x,j){
+        temp <- numeric(K)
+        for(z in 1:K){
+            temp[z] <- dLS.cluster.margin(x,z,j)
+        }
+        sum(em$pz*temp)
+    }
+    EUD <- matrix(rep(NA,length(xrange)*d),ncol=d,nrow=length(xrange))
+    for(j in 1:d){
+        postscript(pathMargins[j])
+        hist(data[,j],prob=TRUE,xlim=range(data[,j]),xlab="",main="",ylab="")
+        ## Estimated Univariate Density:
+        EUD[,j] <- sapply(xrange,dLS.margin,j=j) 
+        lines(xrange,EUD[,j],type="l")
+        dev.off()
+    }
+
+    list(contours=cont, bootstrapsample=fXbootstrap, EUD=EUD)
+}
